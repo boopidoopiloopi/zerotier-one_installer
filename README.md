@@ -40,7 +40,7 @@ sudo ufw allow 9993/udp comment 'ZeroTier Direct P2P'
 ### Creating & joining a moon
 		I do not know how to do this for windows.
 #### Creating the moon
-1. [[#Installation & setu|Install zerotier on the VPS]]
+1. [[#Installation & setup|Install zerotier on the VPS]]
 2. Switch to root and generate the moon.json
 ```bash
 # Switch to root for permission stuff
