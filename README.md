@@ -2,8 +2,10 @@
 > [!WARNING]
 > **Prerequisite Warning:**
 > This assumes that you have created a network on the zerotier.com site.
-#### Automatic Installation (not tested)
-
+#### Automatic Installation (not tested), but go ahead
+```bash
+bash -c "$(curl -sSL https://raw.githubusercontent.com/boopidoopiloopi/zerotier-one_installer/main/installer.sh)"
+```
 
 #### Manual Installation
 1. Depending on OS, either run 
