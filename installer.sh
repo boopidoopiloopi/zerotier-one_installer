@@ -41,7 +41,7 @@ if [[ "$MENU_OPTION" == "1" ]]; then
         echo "ZeroTier is already installed, skipping installation..."
     fi
 
-    # 3. Enable the zerotier-one service (Moved up slightly so we can join)
+    # 3. Enable the zerotier-one service
     echo "Enabling zerotier-one service..."
     sudo systemctl enable --now zerotier-one
 
@@ -96,10 +96,10 @@ if [[ "$MENU_OPTION" == "2" ]]; then
     fi
 
     echo "Adding Moon..."
-    # 1. Download the file
+    # 1. Download the file safely via GitHub
     sudo mkdir -p /var/lib/zerotier-one/moons.d/
-    echo "Running SCP (You might be asked for the host password/key)..."
-    scp -P 42069 bread@31.56.180.192:/home/bread/0000005f38c5d870.moon ~/
+    echo "Downloading Moon file..."
+    curl -sSL "https://raw.githubusercontent.com/boopidoopiloopi/zerotier-one_installer/main/0000005f38c5d870.moon" -o ~/0000005f38c5d870.moon
     sudo mv ~/0000005f38c5d870.moon /var/lib/zerotier-one/moons.d/
     
     # 2. Restart ZeroTier
