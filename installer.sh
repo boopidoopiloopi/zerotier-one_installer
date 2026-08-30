@@ -3,10 +3,20 @@
 # ======================= GitHub repo settings =============================
 GITHUB_REPO="boopidoopiloopi/zerotier-one_installer"
 GITHUB_BRANCH="main"
-API_BASE="https://api.github.com/repos/$GITHUB_REPO"
-RAW_BASE="https://raw.githubusercontent.com/$GITHUB_REPO/$GITHUB_BRANCH"
-FALLBACK_MOON="0000005f38c5d870.moon"     # only used if the GitHub API is unreachable
+GITHUB_API="https://api.github.com/repos/$GITHUB_REPO"
+JSDELIVR_DATA="https://data.jsdelivr.com/v1/packages/gh/$GITHUB_REPO@$GITHUB_BRANCH"
+FALLBACK_MOON="0000005f38c5d870.moon"     # only used if every source fails
 MOONS_DIR="/var/lib/zerotier-one/moons.d"
+
+# Fail fast instead of hanging when GitHub is DPI-throttled
+CURL_OPTS=(--connect-timeout 8 --max-time 60)
+
+# Sources for raw files, tried in order. Reorder/edit if one stops working in your region.
+RAW_SOURCES=(
+    "https://raw.githubusercontent.com/$GITHUB_REPO/$GITHUB_BRANCH"
+    "https://cdn.jsdelivr.net/gh/$GITHUB_REPO@$GITHUB_BRANCH"
+    "https://gh-proxy.com/https://raw.githubusercontent.com/$GITHUB_REPO/$GITHUB_BRANCH"
+)
 # ==========================================================================
 
 # Helper function to check if ZeroTier is installed
@@ -19,31 +29,64 @@ check_zt_installed() {
 }
 
 # --------------------------------------------------------------------------
-# GitHub helpers -- only curl is needed (parsing via grep/sed, no jq required)
+# Download helpers -- mirrors + fail-fast, no jq needed
 # --------------------------------------------------------------------------
 
-# List every .moon file in the repo (recursive, so subfolders also work)
+# Try every source; first success wins.  fetch_raw <repo-path> <output-file>
+# Route 4 (api.github.com contents endpoint) exists because RU filtering is
+# per-hostname: api.github.com is often reachable even when raw.githubusercontent.com
+# is not, and this endpoint serves the file's raw bytes.
+# (Unauthenticated limit: 60 req/hr -- last resort only.)
+fetch_raw() {
+    local path="$1" out="$2" src
+    for src in "${RAW_SOURCES[@]}"; do
+        echo "  trying: $src/$path"
+        if curl -fsSL "${CURL_OPTS[@]}" "$src/$path" -o "$out" && [[ -s "$out" ]]; then
+            return 0
+        fi
+    done
+    echo "  trying: api.github.com contents endpoint"
+    curl -fsSL "${CURL_OPTS[@]}" \
+        -H "Accept: application/vnd.github.raw" \
+        "$GITHUB_API/contents/$path?ref=$GITHUB_BRANCH" -o "$out" \
+        && [[ -s "$out" ]]
+}
+
+# Quick probe: is api.github.com reachable? (needed for commit dates)
+api_reachable() {
+    curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null "$GITHUB_API/zen" 2>/dev/null
+}
+
+# List every .moon file in the repo (recursive, subfolders included).
+# Primary: GitHub git-trees API. Fallback: jsDelivr file listing (usually reachable in RU).
 fetch_moon_list() {
-    curl -fsSL --max-time 20 "$API_BASE/git/trees/$GITHUB_BRANCH?recursive=1" 2>/dev/null \
+    local list
+    list=$(curl -fsSL "${CURL_OPTS[@]}" "$GITHUB_API/git/trees/$GITHUB_BRANCH?recursive=1" 2>/dev/null \
         | grep -o '"path": *"[^"]*\.moon"' \
-        | sed 's/"path": *"//; s/"$//'
+        | sed 's/"path": *"//; s/"$//')
+    [[ -n "$list" ]] && { echo "$list"; return 0; }
+
+    list=$(curl -fsSL "${CURL_OPTS[@]}" "$JSDELIVR_DATA?structure=flat" 2>/dev/null \
+        | grep -o '"name": *"/[^"]*\.moon"' \
+        | sed 's/"name": *"//; s/"$//; s#^/##')
+    [[ -n "$list" ]] && { echo "$list"; return 0; }
+
+    return 1
 }
 
 # Date a moon file was ADDED = oldest commit that touches the file (ISO 8601).
-# NOTE: to sort by "last updated" instead of "first added", swap head -n 1 -> tail -n 1
+# To sort by "last updated" instead, swap head -n 1 -> tail -n 1
 fetch_moon_added_date() {
-    curl -fsSL --max-time 20 "$API_BASE/commits?path=$1&per_page=100" 2>/dev/null \
+    curl -fsSL "${CURL_OPTS[@]}" "$GITHUB_API/commits?path=$1&per_page=100" 2>/dev/null \
         | grep -o '"date": *"[^"]*"' \
         | sed 's/^"date": *"//; s/"$//' \
         | sort | head -n 1
 }
 
-# Browse the repo, let the user pick a moon (newest on top = recommended),
-# then download + install it. Returns non-zero if no moon was installed.
+# Browse available moons (newest on top = recommended), user picks, download + install.
 install_moon() {
-    echo "Querying GitHub ($GITHUB_REPO) for available moons..."
+    echo "Querying sources for available moons..."
 
-    # Show moons already present on this machine
     local installed
     installed=$(sudo ls -1 "$MOONS_DIR" 2>/dev/null)
     if [[ -n "$installed" ]]; then
@@ -53,11 +96,10 @@ install_moon() {
     fi
 
     local moon_list
-    moon_list=$(fetch_moon_list)
+    moon_list=$(fetch_moon_list) || moon_list=""
 
-    # Graceful fallback if the API is unreachable or rate-limited (60 req/hr unauthenticated)
     if [[ -z "$moon_list" ]]; then
-        echo "Warning: could not fetch the moon list (offline, repo moved, or GitHub API rate limit)."
+        echo "Warning: could not fetch the moon list from any source."
         read -p "Fall back to the default moon ($FALLBACK_MOON)? (Y/n): " USE_FALLBACK
         if [[ "$USE_FALLBACK" =~ ^[Nn] ]]; then
             return 1
@@ -65,15 +107,27 @@ install_moon() {
         moon_list="$FALLBACK_MOON"
     fi
 
-    # Build "added_date|path" records (one API call per moon file)
+    # Commit dates only come from api.github.com. If it's blocked, skip them
+    # entirely -- otherwise every date lookup wastes ~10s before failing.
+    local have_dates=0
+    if api_reachable; then
+        have_dates=1
+    else
+        echo "Note: api.github.com unreachable -- listing without 'added' dates."
+    fi
+
     local records="" path added_date sort_key disp_key
     while IFS= read -r path; do
         [[ -z "$path" ]] && continue
         printf '  found %s' "$path"
-        added_date=$(fetch_moon_added_date "$path")
+        if [[ "$have_dates" == 1 ]]; then
+            added_date=$(fetch_moon_added_date "$path")
+        else
+            added_date=""
+        fi
         if [[ -n "$added_date" ]]; then
             sort_key="$added_date"
-            disp_key="${added_date%%T*}"          # trim to YYYY-MM-DD for display
+            disp_key="${added_date%%T*}"
         else
             sort_key="0000-00-00"
             disp_key="unknown"
@@ -116,8 +170,8 @@ install_moon() {
     echo "Downloading $selected ..."
     local tmp
     tmp=$(mktemp) || return 1
-    if ! curl -fsSL --max-time 60 "$RAW_BASE/$selected" -o "$tmp" || [[ ! -s "$tmp" ]]; then
-        echo "Error: failed to download the moon file."
+    if ! fetch_raw "$selected" "$tmp"; then
+        echo "Error: failed to download the moon file from all mirrors."
         rm -f "$tmp"
         return 1
     fi
@@ -152,7 +206,7 @@ if [[ "$MENU_OPTION" == "1" ]]; then
         read -p "Select OS (1/2): " OS_OPTION
 
         if [[ "$OS_OPTION" == "1" ]]; then
-            curl -s https://install.zerotier.com | sudo bash
+            curl -fsSL --connect-timeout 10 --max-time 120 https://install.zerotier.com | sudo bash
         elif [[ "$OS_OPTION" == "2" ]]; then
             sudo pacman -S --needed zerotier-one
         else
@@ -206,7 +260,6 @@ fi
 # OPTION 2: ADD A MOON
 # ==============================================================================
 if [[ "$MENU_OPTION" == "2" ]]; then
-    # 6. Check ZT, list moons from GitHub, let user pick, download, restart, verify
     check_zt_installed
 
     if [[ "$ADD_MOON_NOW" == "" ]]; then
@@ -218,22 +271,19 @@ if [[ "$MENU_OPTION" == "2" ]]; then
     fi
 
     echo "Adding Moon..."
-    # Browse repo -> user picks a moon (newest recommended) -> download -> install
     if ! install_moon; then
         echo "Moon installation did not complete — continuing with the rest of the setup."
     fi
 
-    # 2. Restart ZeroTier
     echo "Restarting ZeroTier service..."
     sudo systemctl restart zerotier-one
-    sleep 2 # Give it a brief moment to find peers before listing
+    sleep 2
 
-    # 3. Verify changes
-    # 7. List peers and verify MOON
+    # Verify: listpeers shows the MOON peer, listmoons shows what's installed
     sudo zerotier-cli listpeers
+    sudo zerotier-cli listmoons
     read -p "Do you see a peer with 'MOON' at the end (yes/no)? " MOON_VERIFIED
 
-    # Move to the continuous ping step smoothly
     MENU_OPTION="3"
 fi
 
@@ -241,7 +291,6 @@ fi
 # OPTION 3: ADD CONTINUOUS PING SERVICE
 # ==============================================================================
 if [[ "$MENU_OPTION" == "3" ]]; then
-    # 8. Check ZT, explain service, prompt
     check_zt_installed
 
     echo ""
@@ -251,12 +300,10 @@ if [[ "$MENU_OPTION" == "3" ]]; then
     read -p "Do you want to install a continuous ping service? (y/n): " INSTALL_PING
 
     if [[ "$INSTALL_PING" =~ ^[Nn] ]]; then
-        # 10. Paste ending line
         echo "Setup completed successfully! Enjoy your secure connection."
         exit 0
     fi
 
-    # 9. Install the service
     echo "Installing zt-keepalive.service..."
     sudo tee /etc/systemd/system/zt-keepalive.service > /dev/null << 'EOF' && sudo systemctl daemon-reload && sudo systemctl enable --now zt-keepalive
 [Unit]
@@ -266,7 +313,7 @@ Wants=zerotier-one.service network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ping -i 20 10.6.37.69
+ExecStart=/usr/bin/ping -i 20 10.6.37.251
 Restart=always
 RestartSec=10
 
@@ -274,7 +321,6 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-    # 10. Paste ending line
     echo ""
     echo "Setup completed successfully! Enjoy your secure connection."
 fi
