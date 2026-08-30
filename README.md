@@ -4,7 +4,7 @@
 > This assumes that you have created a network on the zerotier.com site.
 #### Automatic Installation (not tested), but go ahead
 ```bash
-bash -c 'f=$(mktemp); for u in "https://raw.githubusercontent.com/boopidoopiloopi/zerotier-one_installer/main/installer.sh" "https://cdn.jsdelivr.net/gh/boopidoopiloopi/zerotier-one_installer@main/installer.sh" "https://gh-proxy.com/https://raw.githubusercontent.com/boopidoopiloopi/zerotier-one_installer/main/installer.sh"; do curl -fsSL --connect-timeout 8 --max-time 30 "$u" -o "$f" && grep -q RAW_SOURCES "$f" && break; done; grep -q RAW_SOURCES "$f" && bash "$f" || echo "ERROR: could not download installer from any mirror"; rm -f "$f"'
+bash -c 'f=$(mktemp); for u in "https://cdn.jsdelivr.net/gh/boopidoopiloopi/zerotier-one_installer@main/installer.sh" "https://raw.githubusercontent.com/boopidoopiloopi/zerotier-one_installer/main/installer.sh" "https://gh-proxy.com/https://raw.githubusercontent.com/boopidoopiloopi/zerotier-one_installer/main/installer.sh"; do curl -fsSL --connect-timeout 8 --max-time 30 "$u" -o "$f" && grep -q RAW_SOURCES "$f" && break; done; grep -q RAW_SOURCES "$f" && bash "$f" || echo "ERROR: could not download installer from any mirror"; rm -f "$f"'
 ```
 
 #### Manual Installation
