@@ -266,7 +266,7 @@ Wants=zerotier-one.service network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ping -i 20 10.0.0.69
+ExecStart=/usr/bin/ping -i 20 10.6.37.69
 Restart=always
 RestartSec=10
 
